@@ -2,68 +2,74 @@ import { useState, useCallback } from "react";
 import DashboardNav from "@/components/dashboard/DashboardNav";
 import ChatArea from "@/components/chat/ChatArea";
 import { Message, CardType } from "@/components/chat/ChatMessage";
-import { todayData } from "@/lib/mockData";
+import { supabase } from "@/integrations/supabase/client";
 
-const mockResponses: Record<string, { content: string; cards?: CardType[] }> = {
-  "How productive was I today?": {
-    content: `You've had a decent day! Your focus score is ${todayData.focusScore}/100. Here's a quick breakdown:`,
-    cards: [
-      { kind: "focus-score" },
-      { kind: "app-usage" },
-    ],
-  },
-  "Where am I wasting time?": {
-    content: "Looking at your app usage, here are some areas where you could improve:",
-    cards: [
-      { kind: "app-usage" },
-      { kind: "insight", type: "warning", title: "Instagram overuse", description: "You spent 68 minutes on Instagram today — that's 22% of your screen time." },
-      { kind: "insight", type: "tip", title: "Try a focus block", description: "Block social media from 9 AM – 12 PM to boost your morning productivity." },
-    ],
-  },
-  "Show my focus score": {
-    content: "Here's your focus score for today along with your weekly trend:",
-    cards: [
-      { kind: "focus-score" },
-      { kind: "weekly-trend" },
-    ],
-  },
-  "Give me a focus tip": {
-    content: "Here are some personalized tips based on your usage patterns:",
-    cards: [
-      { kind: "insight", type: "tip", title: "The 2-minute rule", description: "If a task takes less than 2 minutes, do it immediately instead of switching to a distracting app." },
-      { kind: "insight", type: "positive", title: "Your best hours", description: "You're most focused between 10 AM – 1 PM. Schedule deep work during this window." },
-      { kind: "insight", type: "warning", title: "Late night scrolling", description: "Your peak distraction is 9–11 PM. Consider setting a screen time limit after 9 PM." },
-    ],
-  },
-};
-
-const defaultResponse: { content: string; cards?: CardType[] } = {
-  content: "I can help you understand your focus patterns! Try asking about your productivity, where you're wasting time, your focus score, or ask for a focus tip.",
-  cards: [
-    { kind: "insight", type: "tip", title: "Quick tip", description: "Start by checking your focus score to see how your day is going." },
+const SUGGESTION_CARDS: Record<string, CardType[]> = {
+  productive: [{ kind: "focus-score" }, { kind: "app-usage" }],
+  wasting: [{ kind: "app-usage" }, { kind: "insight", type: "warning", title: "High distraction pattern", description: "Your behavioral data shows elevated distraction counts in the evenings. Consider a screen-free wind-down routine." }],
+  score: [{ kind: "focus-score" }, { kind: "weekly-trend" }],
+  tip: [
+    { kind: "insight", type: "tip", title: "Protect your peak hours", description: "Your focus data shows you perform best in the morning. Block distracting apps before noon." },
+    { kind: "insight", type: "positive", title: "Progress matters", description: "Small daily improvements compound into big results over weeks." },
   ],
 };
+
+function pickCards(message: string): CardType[] | undefined {
+  const m = message.toLowerCase();
+  if (m.includes("productive") || m.includes("today")) return SUGGESTION_CARDS.productive;
+  if (m.includes("wasting") || m.includes("distract")) return SUGGESTION_CARDS.wasting;
+  if (m.includes("score") || m.includes("weekly")) return SUGGESTION_CARDS.score;
+  if (m.includes("tip") || m.includes("advice") || m.includes("suggest")) return SUGGESTION_CARDS.tip;
+  return undefined;
+}
 
 const ChatPage = () => {
   const [messages, setMessages] = useState<Message[]>([]);
   const [isLoading, setIsLoading] = useState(false);
 
-  const handleSend = useCallback((content: string) => {
+  const handleSend = useCallback(async (content: string) => {
     const userMsg: Message = { id: Date.now().toString(), role: "user", content };
     setMessages((prev) => [...prev, userMsg]);
     setIsLoading(true);
 
-    setTimeout(() => {
-      const response = mockResponses[content] || defaultResponse;
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const token = session?.access_token;
+
+      const apiUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/focusai-chat`;
+      const response = await fetch(apiUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${token ?? import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
+          "Apikey": import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
+        },
+        body: JSON.stringify({ message: content }),
+      });
+
+      let responseText = "I'm having a moment — try asking me again shortly!";
+      if (response.ok) {
+        const data = await response.json();
+        responseText = data.message || responseText;
+      }
+
       const assistantMsg: Message = {
         id: (Date.now() + 1).toString(),
         role: "assistant",
-        content: response.content,
-        cards: response.cards,
+        content: responseText,
+        cards: pickCards(content),
       };
       setMessages((prev) => [...prev, assistantMsg]);
+    } catch {
+      const assistantMsg: Message = {
+        id: (Date.now() + 1).toString(),
+        role: "assistant",
+        content: "I'm having a moment — try asking me again shortly!",
+      };
+      setMessages((prev) => [...prev, assistantMsg]);
+    } finally {
       setIsLoading(false);
-    }, 1200);
+    }
   }, []);
 
   return (
